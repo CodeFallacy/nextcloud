@@ -1,0 +1,57 @@
+services:
+  nextcloud-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: my-nextcloud:latest
+    restart: always
+    depends_on:
+      - nextcloud-db
+    volumes:
+      - ${NEXTCLOUD_VOLUME}:/var/www/html
+      - ${OPCACHE_PATH}:/usr/local/etc/php/conf.d/opcache-recommended.ini
+      - /run/clamav/clamd.ctl:/run/clamav/clamd.ctl
+      - /var/run/clamav/clamd.ctl:/var/run/clamav/clamd.ctl
+    environment:
+      - PHP_MEMORY_LIMIT=2048M
+      - PHP_UPLOAD_LIMIT=30G
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_HOST=nextcloud-db
+      - REDIS_HOST=nextcloud-redis
+      - REDIS_HOST_PASSWORD=${REDIS_HOST_PASSWORD}
+
+  nextcloud-db:
+    image: mariadb:11.4
+    restart: always
+    command: --transaction-isolation=READ-COMMITTED --binlog-format=ROW
+    volumes:
+      - ${MYSQL_VOLUME}:/var/lib/mysql
+    environment:
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+
+  nextcloud-redis:
+    image: redis:alpine
+    restart: always
+    command: redis-server --requirepass ${REDIS_HOST_PASSWORD}
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - ${REDIS_VOLUME}:/var/lib/redis
+    environment:
+      - REDIS_REPLICATION_MODE=master
+
+#if this cron container doesnt work add this command to host machine crontab: */5 * * * * docker exec -u www-data nextcloud-container-name php cron.php 
+  cron:
+    image: nextcloud:latest
+    restart: always
+    volumes:
+      - ${NEXTCLOUD_VOLUME}:/var/www/html
+    entrypoint: /cron.sh
+    depends_on:
+      - nextcloud-app
+      - nextcloud-redis

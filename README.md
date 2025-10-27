@@ -1,0 +1,3 @@
+# My Personal Nextcloud Config
+
+
