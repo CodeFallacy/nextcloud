@@ -1,6 +1,6 @@
 FROM nextcloud:latest
 
-ARG VERSION=31.0.10
+ARG VERSION=32
 
 # Update package lists
 RUN apt-get update
