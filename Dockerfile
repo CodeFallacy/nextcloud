@@ -1,6 +1,6 @@
 FROM nextcloud:latest
 
-ARG VERSION=31.0.10
+ARG VERSION=32
 
 # Update package lists
 RUN apt-get update
@@ -13,3 +13,6 @@ RUN apt-get install -y nano
 
 #Install Node & NPM
 RUN apt-get install -y nodejs npm
+
+# Install OpenJDK
+RUN apt-get install openjdk-21
