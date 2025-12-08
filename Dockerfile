@@ -15,4 +15,4 @@ RUN apt-get install -y nano
 RUN apt-get install -y nodejs npm
 
 # Install OpenJDK
-RUN apt-get install openjdk-21
+RUN apt-get install openjdk
