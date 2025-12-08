@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ghcr.io/codefallacy/nextcloud:31.0.10
+    image: ghcr.io/codefallacy/nextcloud:32
     restart: always
     depends_on:
       - nextcloud-db
