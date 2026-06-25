@@ -18,8 +18,8 @@
 # RUN ls -lh
 
 
-FROM nextcloud:32.0.6
-ARG VERSION=32.0.6
+FROM nextcloud:32.0.11
+ARG VERSION=32.0.11
  
 # Update package lists
 RUN apt-get update
