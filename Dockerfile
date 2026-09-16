@@ -1,44 +1,24 @@
-# FROM nextcloud:32.0.6
+ARG NEXTCLOUD_VERSION=34.0.4
+FROM nextcloud:${NEXTCLOUD_VERSION}-apache
+ARG TARGETARCH
 
-# ARG VERSION=32.0.6
-
-# # Update package lists
-# RUN apt-get update
-
-# # Install ffmpeg
-# RUN apt-get install -y ffmpeg
-
-# # Install nano
-# RUN apt-get install -y nano
-
-# #Install Node & NPM
-# RUN apt-get install -y nodejs npm
-
-# # list directories
-# RUN ls -lh
-
-
-FROM nextcloud:32.0.11
-ARG VERSION=32.0.11
- 
-# Update package lists
-RUN apt-get update
- 
-# Install ffmpeg
-RUN apt-get install -y ffmpeg
- 
-# Install nano
-RUN apt-get install -y nano
- 
-# Install Node & NPM
-RUN apt-get install -y nodejs npm
- 
-# Install Java (needed by libresign)
-RUN apt-get install -y default-jre-headless
- 
-# Copy the occ hook script — runs on first container start after Nextcloud is ready
-COPY init-libresign.sh /docker-entrypoint-hooks.d/post-installation/init-libresign.sh
-RUN chmod +x /docker-entrypoint-hooks.d/post-installation/init-libresign.sh
- 
-# List directories (optional debug step)
-RUN ls -lh
+# Debian resolves native amd64/arm64 packages for the selected base image.
+# Do not download LibreSign's Java runtime at container startup: persisted app
+# data can retain a runtime built for a different CPU after a host migration.
+RUN set -eux; \
+    test "$(dpkg --print-architecture)" = "$TARGETARCH"; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        default-jre-headless \
+        ffmpeg \
+        nano \
+        nodejs \
+        npm \
+        pdftk-java \
+        poppler-utils; \
+    rm -rf /var/lib/apt/lists/*; \
+    java -version; \
+    ffmpeg -version; \
+    pdftk --version; \
+    pdfinfo -v; \
+    pdfsig -v
