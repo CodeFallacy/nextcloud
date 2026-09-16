@@ -1,0 +1,5 @@
+services:
+  nextcloud-app:
+    image: ghcr.io/codefallacy/nextcloud:32.0.15
+  cron:
+    image: ghcr.io/codefallacy/nextcloud:32.0.15
