@@ -1,17 +1,21 @@
+networks:
+  npm-network:
+    name: npm-network
+    external: true
+
 services:
   nextcloud-app:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ghcr.io/codefallacy/nextcloud:32
+    image: ghcr.io/codefallacy/nextcloud:34.0.4
     restart: always
     depends_on:
       - nextcloud-db
     volumes:
       - ${NEXTCLOUD_VOLUME}:/var/www/html
       - ${OPCACHE_PATH}:/usr/local/etc/php/conf.d/opcache-recommended.ini
-      - /run/clamav/clamd.ctl:/run/clamav/clamd.ctl
-      - /var/run/clamav/clamd.ctl:/var/run/clamav/clamd.ctl
+      - /run/clamav:/run/clamav
     environment:
       - PHP_MEMORY_LIMIT=2048M
       - PHP_UPLOAD_LIMIT=30G
@@ -21,9 +25,11 @@ services:
       - MYSQL_HOST=nextcloud-db
       - REDIS_HOST=nextcloud-redis
       - REDIS_HOST_PASSWORD=${REDIS_HOST_PASSWORD}
+    networks:
+      - npm-network
 
   nextcloud-db:
-    image: mariadb:11.4
+    image: mariadb:11.5.2
     restart: always
     command: --transaction-isolation=READ-COMMITTED --binlog-format=ROW
     volumes:
@@ -33,6 +39,8 @@ services:
       - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
       - MYSQL_USER=${MYSQL_USER}
       - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+    networks:
+      - npm-network
 
   nextcloud-redis:
     image: redis:alpine
@@ -41,13 +49,13 @@ services:
     ports:
       - "127.0.0.1:6379:6379"
     volumes:
-      - ${REDIS_VOLUME}:/var/lib/redis
-    environment:
-      - REDIS_REPLICATION_MODE=master
+      - ${REDIS_VOLUME}:/data
+    networks:
+      - npm-network
 
 #if this cron container doesnt work add this command to host machine crontab: */5 * * * * docker exec -u www-data nextcloud-container-name php cron.php 
   cron:
-    image: nextcloud:latest
+    image: ghcr.io/codefallacy/nextcloud:34.0.4
     restart: always
     volumes:
       - ${NEXTCLOUD_VOLUME}:/var/www/html
@@ -55,3 +63,18 @@ services:
     depends_on:
       - nextcloud-app
       - nextcloud-redis
+    networks:
+      - npm-network
+
+  collabora-nc:
+    image: collabora/code:26.04.3.2.1
+    restart: unless-stopped
+    shm_size: 256m
+    environment:
+      aliasgroup1: https://nc.luisunlimited.com:443
+      server_name: collabora123.luisunlimited.com
+      extra_params: --o:ssl.enable=false --o:ssl.termination=true --o:num_prespawn_children=1
+    expose:
+      - "9980"
+    networks:
+      - npm-network
