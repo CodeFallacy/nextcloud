@@ -17,6 +17,8 @@ services:
       - ${OPCACHE_PATH}:/usr/local/etc/php/conf.d/opcache-recommended.ini
       - /run/clamav:/run/clamav
     environment:
+      - LANG=C.UTF-8
+      - LC_ALL=C.UTF-8
       - PHP_MEMORY_LIMIT=2048M
       - PHP_UPLOAD_LIMIT=30G
       - MYSQL_PASSWORD=${MYSQL_PASSWORD}
@@ -57,8 +59,12 @@ services:
   cron:
     image: ghcr.io/codefallacy/nextcloud:34.0.4
     restart: always
+    environment:
+      - LANG=C.UTF-8
+      - LC_ALL=C.UTF-8
     volumes:
       - ${NEXTCLOUD_VOLUME}:/var/www/html
+      - /run/clamav:/run/clamav
     entrypoint: /cron.sh
     depends_on:
       - nextcloud-app

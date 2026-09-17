@@ -56,6 +56,19 @@ executables between x86 and ARM; reinstall them for the destination CPU and
 run `libresign:configure:check`. Manually setting system binary paths may
 still show LibreSign hash warnings even if a binary runs correctly.
 
+On the Pi, LibreSign 14.1.0 cleared its JSignPdf and PDFtk hash warnings after
+reinstalling those assets for ARM64:
+
+```sh
+docker compose exec -u www-data nextcloud-app php occ libresign:install --jsignpdf --pdftk --architecture=aarch64
+docker compose exec -u www-data nextcloud-app php occ libresign:configure:check
+```
+
+The app and cron containers set `LANG` and `LC_ALL` to `C.UTF-8`; this also
+cleared LibreSign's Java encoding warning. After upgrading Nextcloud, run
+`occ maintenance:repair --include-expensive` if the admin overview reports
+mimetype or duplicate-system-tag migrations.
+
 ## Deploy or upgrade from the existing Pi installation
 
 1. Back up the Nextcloud data/config volume and MariaDB before an upgrade.
@@ -150,8 +163,11 @@ the official image's `/data` directory; Redis is a cache/lock service, not a
 substitute for the MariaDB backup.
 
 The Pi uses the **host's** `clamav-daemon` and `clamav-freshclam`, not a second
-ClamAV container. The app mounts `/run/clamav` as a directory so a recreated
-`clamd.ctl` socket stays visible after daemon restarts. In Nextcloud, enable
+ClamAV container. Both the app and cron containers mount `/run/clamav` as a
+directory so a recreated `clamd.ctl` socket stays visible after daemon
+restarts. The cron mount is essential: the Antivirus background scanner runs
+there, and without it the log repeatedly reports that the socket does not
+exist even while scans from the app container work. In Nextcloud, enable
 `files_antivirus` and select **Daemon (Socket)** with
 `/var/run/clamav/clamd.ctl` (`/var/run` links to `/run` in the container).
 The Compose host must actually run ClamAV and expose that socket. Check:
@@ -160,7 +176,13 @@ The Compose host must actually run ClamAV and expose that socket. Check:
 systemctl is-active clamav-daemon clamav-freshclam
 docker compose exec -u www-data nextcloud-app php occ config:app:get files_antivirus av_mode
 docker compose exec -u www-data nextcloud-app php occ files_antivirus:status
+docker compose exec cron test -S /var/run/clamav/clamd.ctl
+docker compose exec -u www-data cron php occ files_antivirus:test
 ```
+
+The Pi's cron-container test detected standard EICAR but not the modified
+EICAR variant; treat that as a separate scanning-policy issue, not a socket
+connectivity failure.
 
 The Pi's host ClamAV currently limits `MaxFileSize` and `StreamMaxLength` to
 100 MB, whereas Nextcloud permits larger uploads. Review those limits and
