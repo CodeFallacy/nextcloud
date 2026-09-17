@@ -19,6 +19,9 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*; \
     java -version; \
     ffmpeg -version; \
+    node --version; \
+    npm --version; \
+    node -e 'if (typeof WebAssembly !== "object") process.exit(1)'; \
     pdftk --version; \
     pdfinfo -v; \
     pdfsig -v

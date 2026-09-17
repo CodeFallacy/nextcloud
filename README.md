@@ -194,6 +194,45 @@ and configure Nextcloud's daemon TCP mode; do not publish ClamAV's unauthenticat
 TCP port to the internet. Official ClamAV Debian image tags include both
 `amd64` and `arm64`; the generic Alpine `stable_base` tag is not ARM64.
 
+## Recognize on ARM64 (WASM mode)
+
+The image installs architecture-native Node.js and npm at build time, and the
+build verifies that Node exposes WebAssembly. The Recognize app, its JavaScript
+modules, and its model files live in Nextcloud's persistent app directory, not
+in this image; install or update them through Nextcloud on the target host.
+Recognize's native TensorFlow addon is not available on the Pi, so a failing
+native TensorFlow test is expected. Do not try to use the Pi's VideoCore GPU as
+Recognize's CUDA backend.
+
+On the Pi, Recognize 12.0.2 had `/usr/bin/node` configured from an earlier
+migration but `tensorflow.purejs=false`. Its automatic dependency repair still
+tried to install the native addon and reported a warning. Set the backend
+explicitly and download the models as the web-server user:
+
+```sh
+docker compose exec -T -u www-data nextcloud-app php occ config:app:set recognize node_binary --value=/usr/bin/node
+docker compose exec -T -u www-data nextcloud-app php occ config:app:set recognize tensorflow.purejs --value=true
+docker compose exec -T -u www-data nextcloud-app php occ config:app:set recognize tensorflow.gpu --value=false
+docker compose exec -T -u www-data nextcloud-app php occ config:app:set recognize ffmpeg_binary --value=/usr/bin/ffmpeg
+docker compose exec -T -u www-data nextcloud-app php occ config:app:set recognize faces.batchSize --value=20
+docker compose exec -T -u www-data nextcloud-app php occ config:app:set recognize landmarks.batchSize --value=5
+docker compose exec -T -u www-data nextcloud-app php occ config:app:set recognize musicnn.batchSize --value=10
+docker compose exec -T -u www-data nextcloud-app php occ recognize:download-models
+docker compose exec -T -u www-data nextcloud-app sh -c 'cd /var/www/html/custom_apps/recognize && node src/test_wasmtensorflow.js'
+```
+
+The Pi has 4 GB RAM shared with MariaDB, Collabora, and host ClamAV. Keep
+background-job concurrency disabled and provide swap (the Pi uses a persistent
+2 GB `/var/swap` through `dphys-swapfile`). The model download temporarily
+needs over 1 GB for its archive and keeps roughly 1.2 GB of extracted models.
+A full `recognize:classify` scans
+the entire library and may run for hours or exhaust memory; first test one
+small image with `RECOGNIZE_PUREJS=true node src/classifier_faces.js <image>`
+and let normal cron jobs process the queue. Face model weights ship in
+Recognize's `node_modules`; the separate `models/` download supplies the
+other enabled classifiers. Recheck these settings after restoring app data from
+a different architecture or upgrading Recognize.
+
 ## Collabora / Nextcloud Office
 
 Collabora is **not** part of the Nextcloud image. The Compose file runs the
