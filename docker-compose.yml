@@ -67,7 +67,7 @@ services:
       - npm-network
 
   collabora-nc:
-    image: collabora/code:latest
+    image: ghcr.io/codefallacy/collabora:latest
     restart: unless-stopped
     shm_size: 256m
     environment:

@@ -1,0 +1,88 @@
+name: Mirror Collabora
+
+on:
+  schedule:
+    - cron: '47 4 * * *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/mirror-collabora.yml
+      - scripts/mirror-collabora.py
+      - scripts/registry_utils.py
+      - scripts/cleanup-images.py
+      - tests/test_mirror_collabora.py
+      - tests/test_registry_utils.py
+      - tests/test_cleanup_images.py
+
+permissions:
+  contents: read
+
+env:
+  DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+  DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+
+concurrency:
+  group: collabora-publish
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    name: Mirror the current official Collabora image to GHCR
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Test mirroring and retention
+        run: |
+          python3 -m unittest discover -s tests -p 'test_mirror_collabora.py' -v
+          python3 -m unittest discover -s tests -p 'test_cleanup_images.py' -v
+          python3 -m unittest discover -s tests -p 'test_registry_utils.py' -v
+      - uses: docker/setup-buildx-action@v4
+      - name: Install Skopeo
+        run: |
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends skopeo
+      - name: Log in to Docker Hub (optional)
+        if: env.DOCKERHUB_USERNAME != ''
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Detect and mirror the current official Collabora image
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY_OWNER_TYPE: ${{ github.event.repository.owner.type }}
+        run: python3 scripts/mirror-collabora.py
+
+  cleanup:
+    name: Keep the newest 20 Collabora image snapshots
+    needs: mirror
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Remove obsolete releases and unused manifests
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_PACKAGE: collabora
+          GITHUB_REPOSITORY_OWNER_TYPE: ${{ github.event.repository.owner.type }}
+        run: python3 scripts/cleanup-images.py

@@ -124,7 +124,7 @@ class DiscoveryTests(unittest.TestCase):
             discovery.inspect(IMAGE, missing_ok=True)
         self.assertEqual(run.call_count, 4)
 
-    def test_pagination_filters_variants_prereleases_and_old_versions(self):
+    def test_pagination_selects_only_version_matching_official_latest(self):
         pages = [
             {"results": [{"name": name} for name in (
                 "34.0.9-apache", "latest", "35.0.0-rc1-apache", "34.0.10-apache",
@@ -133,18 +133,20 @@ class DiscoveryTests(unittest.TestCase):
             {"results": [{"name": "35.0.0-apache"}, {"name": "34.0.10-apache"},
                          {"name": "32.0.15-apache"}], "next": None},
         ]
-        with patch.object(discovery, "urlopen", side_effect=[
+        for page in pages:
+            for tag in page['results']:
+                tag['digest'] = DIGEST if tag['name'] == '34.0.10-apache' else NEW_DIGEST
+        with patch.object(discovery, "inspect", return_value=descriptor()), patch.object(discovery, "urlopen", side_effect=[
             io.BytesIO(json.dumps(page).encode()) for page in pages
         ]) as fetch:
-            self.assertEqual(discovery.published_versions("32.0.15"),
-                             ["35.0.0", "34.0.10", "34.0.9", "32.0.15"])
+            self.assertEqual(discovery.published_versions(), ['34.0.10'])
             self.assertEqual(fetch.call_count, 2)
 
     def test_empty_upstream_list_is_an_error(self):
         with patch.object(discovery, "urlopen", return_value=io.BytesIO(
             b'{"results": [], "next": null}'
-        )), self.assertRaises(RuntimeError):
-            discovery.published_versions("32.0.15")
+        )), patch.object(discovery, "inspect", return_value=descriptor()), self.assertRaises(RuntimeError):
+            discovery.published_versions()
 
     def test_rebuild_reasons(self):
         self.assertFalse(discovery.needs_build(manifest(), DIGEST, RECIPE))

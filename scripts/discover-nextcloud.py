@@ -56,22 +56,26 @@ def version_key(version):
     return tuple(map(int, version.split(".")))
 
 
-def published_versions(minimum):
-    # Paginate the complete list: updated_at ordering is not version ordering.
+def published_versions():
+    """Resolve only the release currently behind official Apache latest."""
+    latest = inspect("docker.io/library/nextcloud:apache", raw=False)
+    digest = latest.get("digest", "")
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest) or not has_platforms(latest):
+        raise RuntimeError("Official Nextcloud Apache latest is incomplete; retry next run")
     url = "https://hub.docker.com/v2/repositories/library/nextcloud/tags?page_size=100&name=apache"
-    versions = set()
+    matches = set()
     while url:
         if not url.startswith("https://hub.docker.com/v2/repositories/library/nextcloud/tags"):
             raise ValueError("Unexpected Docker Hub pagination URL")
         page = fetch_page(url)
         for tag in page["results"]:
             match = re.fullmatch(r"(\d+\.\d+\.\d+)-apache", tag["name"])
-            if match and version_key(match[1]) >= version_key(minimum):
-                versions.add(match[1])
+            if match and tag.get("digest") == digest:
+                matches.add(match[1])
         url = page["next"]
-    if not versions:
-        raise RuntimeError("Docker Hub returned no matching stable Apache versions")
-    return sorted(versions, key=version_key, reverse=True)
+    if not matches:
+        raise RuntimeError("No stable version tag matches official Nextcloud Apache latest")
+    return [max(matches, key=version_key)]
 
 
 def inspect(reference, missing_ok=False, raw=True):
@@ -171,7 +175,8 @@ def discover(versions, image, recipe, force=False, limit=24):
 def main():
     image = "ghcr.io/" + os.environ["GITHUB_REPOSITORY"].lower()
     recipe = recipe_hash()
-    versions = published_versions(os.environ.get("NEXTCLOUD_MIN_VERSION", "32.0.15"))
+    # Follow only current latest; never backfill deleted historical releases.
+    versions = published_versions()
     LOG.info("Discovered %s stable Apache versions; destination: %s", len(versions), image)
     pending, rows, latest, latest_digest = discover(
         versions, image, recipe, os.environ.get("FORCE_REBUILD", "false") == "true"
