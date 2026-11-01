@@ -8,8 +8,8 @@ repository in GitHub Packages. Docker selects the correct architecture.
 ## Automatic image builds
 
 The **Build Nextcloud** GitHub Actions workflow checks Docker Hub every day
-at **03:23 UTC**. It discovers exact stable `X.Y.Z-apache` tags, including
-future major versions, without maintaining a version list. Prereleases,
+at **03:23 UTC**. It resolves the exact stable `X.Y.Z-apache` tag behind
+the current official Apache image, including future major versions. Prereleases,
 FPM/Alpine variants, and floating upstream aliases are excluded.
 
 For each version, it builds when the GHCR image is missing, the upstream
@@ -20,14 +20,12 @@ Each build uses the discovered immutable upstream digest and runs without
 layer caching so the added Debian packages are fetched again. This detects
 upstream changes; it does not certify that an image has no vulnerabilities.
 
-The default discovery floor is **32.0.15**, preserving the existing 32.x
-upgrade path while avoiding a backfill of every historical Nextcloud release.
-An optional repository Actions variable, `NEXTCLOUD_MIN_VERSION`, can change
-this floor. It is a lower bound, not a version that needs updating for each
-release. All matching published versions from that floor onward are checked.
-The first runs may backfill older releases: at most 24 images are queued per
-run, newest first, with two builds in parallel. Remaining images are discovered
-again on the next run. Force rebuilds also respect this batch limit.
+Discovery follows only the image currently behind the official Apache
+`latest` alias. Docker Hub tag metadata identifies its exact Nextcloud version;
+older releases are never backfilled. A change to that image's digest triggers
+one new build, even when the Nextcloud version number stays the same. An
+unchanged digest and build recipe require no build. Force mode rebuilds only
+that current image.
 
 An upstream image must have both target architectures before it is built.
 Unavailable or partially published upstream tags are deferred. Docker Hub API
@@ -81,7 +79,7 @@ and each image build result. Exhausted retries fail the workflow clearly.
 
 Open **Actions → Build Nextcloud → Run workflow** on GitHub. Leave
 **force_rebuild** unchecked to detect and build only new or changed images.
-Check it to rebuild the newest batch even when the recorded inputs match,
+Check it to rebuild the current image even when the recorded inputs match,
 for example to refresh the added Debian packages. Force mode skips reading
 existing GHCR images, so it can also bootstrap an unpublished package.
 
@@ -110,6 +108,69 @@ main Compose file uses `latest` for app and cron; upgrade overlays remain
 pinned. Keep app and cron on the same version
 and perform required major-version upgrades in sequence. The old unversioned
 `arm64`/`aarch64` aliases are not updated.
+
+## Independent Collabora mirror
+
+**Mirror Collabora** runs daily at **04:47 UTC**, on changes to its own files
+on `main`, or through **Actions → Mirror Collabora → Run workflow**. It has
+its own publishing lock and does not invoke or wait for the Nextcloud scripts.
+It checks the official `collabora/code:latest` digest and resolves the matching
+stable numeric version tag from Docker Hub metadata. It never copies a batch
+of historical releases. Prereleases and signature/attestation artifact tags
+are excluded. If that digest is already mirrored, no image copy is needed.
+
+Skopeo copies the official images to `ghcr.io/codefallacy/collabora` with
+`--all --preserve-digests`. This copies all platforms in the official index
+and preserves image contents and digests without a custom Dockerfile. Each
+release must include AMD64 and ARM64. Version tags preserve the original
+Collabora version; `sha256-<upstream-digest>` tags identify mirrored snapshots.
+Only the successfully mirrored release matching the official `latest` digest
+can receive our `latest` tag. Each write checks current upstream digests and
+the current default-branch SHA. Requests and copies use bounded retries and
+logs; failures are reported in Actions summaries. Other release copies
+continue after an individual version fails.
+
+Both workflows support the same optional Docker Hub login secrets. Their
+GHCR packages use the workflow `GITHUB_TOKEN`; no extra token is required
+when the repository has package admin access. Package visibility is managed
+separately for Nextcloud and Collabora.
+
+## Image retention: 20 snapshots per package
+
+Each workflow runs cleanup after successful latest publication. It keeps the
+**20 most recently uploaded complete image snapshots per package**, sorted by
+GitHub's creation timestamp, and deletes the oldest excess snapshots. Rebuilds
+of the same upstream version count as separate snapshots when their digests
+differ. On first use, only the current image is built/mirrored; history grows
+naturally as upstream images change. There is no 20-image initial backfill.
+
+Tags such as `latest`, the upstream version, and a build/digest tag can point
+to one image and do not count as separate snapshots. The image currently
+behind `latest` is always protected, occupying one of the 20 slots. Exact
+version tags and historical build/digest tags disappear when their image
+falls out of retention. Unreferenced architecture/attestation manifests are
+also removed.
+
+Multi-platform indexes require their architecture and attestation manifests.
+Cleanup resolves the full retained manifest graph and protects every dependency,
+including shared layers' image manifests and nested indexes. Consequently
+GitHub may list more than 20 package-version records even though only 20
+independently usable image snapshots are retained. Cleanup never treats each
+untagged architecture manifest as an expendable old image.
+
+The scripts paginate GitHub's package API, prepare a complete deletion plan,
+check the current default-branch revision, and stop if `latest` or a deletion
+target's tags change. Inaccessible manifests or package permissions fail cleanup
+instead of guessing what can be removed. The workflows serialize publishing
+and cleanup for each package independently. Cleanup does not run when the
+required publication failed; transient errors can leave additional images
+until a subsequent successful run completes retention.
+
+The publishing repository needs package **admin** access to delete versions.
+Workflow-created packages normally grant this automatically; grant it explicitly
+for an existing package if needed. GitHub may block deletion of heavily
+downloaded public versions; such failures appear in the cleanup job and require
+GitHub Support. See [GitHub package deletion rules](https://docs.github.com/en/packages/learn-github-packages/deleting-and-restoring-a-package).
 
 ## What is in the image
 
@@ -164,7 +225,9 @@ still show LibreSign hash warnings even if a binary runs correctly.
    service, and host ClamAV socket. This Compose file follows the Pi's tested
    `mariadb:11.5.2`; do not change the database version independently during
    the Nextcloud upgrade.
-3. Wait for the `production` workflow to publish all three image tags. The Pi
+3. Ensure the required upgrade image tags exist in GHCR before starting.
+   The main workflow now follows only the current official image and retains
+   20 snapshots, so bridge tags in these historical examples may be absent. The Pi
    was last checked on Nextcloud 32.0.11; upgrade **32.0.11 → 32.0.15 →
    33.0.9 → 34.0.4**, verifying each step before the next. Nextcloud does not
    support skipping a major version. The included Compose overlays keep app
@@ -270,7 +333,8 @@ TCP port to the internet. Official ClamAV Debian image tags include both
 ## Collabora / Nextcloud Office
 
 Collabora is **not** part of the Nextcloud image. The Compose file runs the
-official `collabora/code:latest` container separately on `npm-network`,
+official Collabora image mirrored at `ghcr.io/codefallacy/collabora:latest`
+separately on `npm-network`,
 shared with the reverse proxy and Nextcloud. Do not force
 `platform: linux/arm64` in a Compose file intended for both architectures.
 The Pi deployment uses `shm_size: 256m`, a reduced spare-process count, and
@@ -278,7 +342,7 @@ the settings below (replace the domains for another installation):
 
 ```yaml
 collabora-nc:
-  image: collabora/code:latest
+  image: ghcr.io/codefallacy/collabora:latest
   restart: unless-stopped
   shm_size: 256m
   environment:

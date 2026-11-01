@@ -41,6 +41,7 @@ class PublishingTests(unittest.TestCase):
         self.upstream = f"docker.io/library/nextcloud:{VERSION}-apache"
         self.images = {
             self.upstream: dict(manifest(), digest=BASE),
+            "docker.io/library/nextcloud:apache": dict(manifest(), digest=BASE),
             f"{IMAGE}:{CANDIDATE}": {"digest": DIGEST},
             f"{IMAGE}@{DIGEST}": manifest(),
             f"{IMAGE}:{VERSION}": None,
@@ -141,6 +142,12 @@ class PublishingTests(unittest.TestCase):
             self.images[self.upstream] = dict(manifest(), digest="sha256:" + "c" * 64)
         self.guard.side_effect = advance_upstream
         with self.assertRaisesRegex(RuntimeError, "superseded"):
+            self.promote()
+        self.write.assert_not_called()
+
+    def test_new_official_latest_release_blocks_stale_latest_promotion(self):
+        self.images['docker.io/library/nextcloud:apache'] = dict(manifest(), digest='sha256:' + 'c' * 64)
+        with self.assertRaisesRegex(RuntimeError, 'Official Nextcloud latest changed'):
             self.promote()
         self.write.assert_not_called()
 

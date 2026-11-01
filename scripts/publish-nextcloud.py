@@ -48,6 +48,10 @@ def require_fresh_candidate(image, target, version, base_digest, created_at):
             "Candidate upstream image has been superseded or is incomplete; "
             "run fresh version discovery instead of replaying this build"
         )
+    if target == "latest":
+        official_latest = discovery.inspect("docker.io/library/nextcloud:apache", raw=False)
+        if official_latest.get("digest") != base_digest or not discovery.has_platforms(official_latest):
+            raise RuntimeError("Official Nextcloud latest changed; run fresh discovery")
     current = discovery.inspect(f"{image}:{target}", missing_ok=True)
     annotations = (current or {}).get("annotations", {})
     current_version = annotations.get(VERSION_KEY)
