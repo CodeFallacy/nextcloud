@@ -1,99 +1,221 @@
 name: Build Nextcloud
 
 on:
+  schedule:
+    - cron: '23 3 * * *'
   push:
-    branches:
-      - production
+    branches: [main]
+    paths:
+      - Dockerfile
+      - scripts/*.py
+      - tests/*.py
+      - .github/workflows/build-nextcloud.yml
   workflow_dispatch:
-
-env:
-  NEXTCLOUD_VERSION: 34.0.4
+    inputs:
+      force_rebuild:
+        description: Rebuild images even when the upstream digest and recipe are unchanged
+        type: boolean
+        default: false
 
 permissions:
   contents: read
-  packages: write
+
+env:
+  DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+  DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+
+# Serialize registry writes; each promotion also verifies the current default-branch SHA.
+concurrency:
+  group: nextcloud-publish
+  cancel-in-progress: false
 
 jobs:
-  upgrade-bridges:
-    name: Build upgrade bridge ${{ matrix.version }}
+  discover:
+    name: Detect new or updated Nextcloud images
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      image: ${{ steps.discover.outputs.image }}
+      matrix: ${{ steps.discover.outputs.matrix }}
+      has_changes: ${{ steps.discover.outputs.has_changes }}
+      recipe: ${{ steps.discover.outputs.recipe }}
+      latest: ${{ steps.discover.outputs.latest }}
+      latest_digest: ${{ steps.discover.outputs.latest_digest }}
+      lookup_failures: ${{ steps.discover.outputs.lookup_failures }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Test discovery logic
+        run: python3 -m unittest discover -s tests -v
+      - uses: docker/setup-buildx-action@v4
+      - name: Log in to Docker Hub (optional)
+        if: env.DOCKERHUB_USERNAME != ''
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Discover published stable Apache images
+        id: discover
+        env:
+          FORCE_REBUILD: ${{ inputs.force_rebuild || false }}
+          NEXTCLOUD_MIN_VERSION: ${{ vars.NEXTCLOUD_MIN_VERSION || '32.0.15' }}
+        run: python3 scripts/discover-nextcloud.py
+
+  build:
+    name: Build Nextcloud ${{ matrix.version }} (AMD64 + ARM64)
+    needs: discover
+    if: needs.discover.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
     strategy:
-      matrix:
-        version: [32.0.15, 33.0.9]
+      fail-fast: false
+      max-parallel: 2
+      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v7
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Log in to GHCR
+      - uses: actions/checkout@v7
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - name: Log in to Docker Hub (optional)
+        if: env.DOCKERHUB_USERNAME != ''
         uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and publish both architectures (with retries)
+        env:
+          IMAGE: ${{ needs.discover.outputs.image }}
+          VERSION: ${{ matrix.version }}
+          BASE_DIGEST: ${{ matrix.digest }}
+          RECIPE: ${{ needs.discover.outputs.recipe }}
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            echo "::group::Build Nextcloud $VERSION — attempt $attempt/3 ($(date -u +%FT%TZ))"
+            if docker buildx build \
+              --file Dockerfile \
+              --platform linux/amd64,linux/arm64 \
+              --build-arg "NEXTCLOUD_VERSION=$VERSION" \
+              --build-arg "NEXTCLOUD_BASE=docker.io/library/nextcloud@$BASE_DIGEST" \
+              --pull --no-cache --push --progress plain \
+              --tag "$IMAGE:build-$VERSION-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+              --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+              --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+              --label "org.opencontainers.image.version=$VERSION" \
+              --label "org.opencontainers.image.base.name=docker.io/library/nextcloud:$VERSION-apache" \
+              --label "org.opencontainers.image.base.digest=$BASE_DIGEST" \
+              --annotation "index:org.opencontainers.image.version=$VERSION" \
+              --annotation "index:org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              --annotation "index:io.codefallacy.nextcloud.base-digest=$BASE_DIGEST" \
+              --annotation "index:io.codefallacy.nextcloud.recipe=$RECIPE" \
+              --metadata-file "$RUNNER_TEMP/nextcloud-build.json" .; then
+              echo "::endgroup::"
+              echo "Successfully published build candidate for $IMAGE:$VERSION"
+              exit 0
+            else
+              build_status=$?
+            fi
+            echo "::endgroup::"
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::Build/push of $VERSION failed after 3 attempts (exit $build_status)."
+              exit "$build_status"
+            fi
+            delay=$((attempt * 15))
+            echo "::warning::Build/push attempt $attempt failed (exit $build_status); retrying in $delay seconds."
+            sleep "$delay"
+          done
+      - name: Verify build candidate and publish exact version
+        env:
+          IMAGE: ${{ needs.discover.outputs.image }}
+          VERSION: ${{ matrix.version }}
+          CANDIDATE: build-${{ matrix.version }}-${{ github.run_id }}-${{ github.run_attempt }}
+          PUBLISH_TAG: ${{ matrix.version }}
+          BASE_DIGEST: ${{ matrix.digest }}
+          RECIPE: ${{ needs.discover.outputs.recipe }}
+        run: python3 scripts/publish-nextcloud.py
 
-      - name: Extract bridge tag
-        id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ghcr.io/${{ github.repository }}
-          tags: type=raw,value=${{ matrix.version }}
+      - name: Record build result
+        if: always()
+        env:
+          IMAGE: ${{ needs.discover.outputs.image }}
+          VERSION: ${{ matrix.version }}
+          BASE_DIGEST: ${{ matrix.digest }}
+          BUILD_STATUS: ${{ job.status }}
+        run: |
+          {
+            echo "## Nextcloud $VERSION"
+            echo
+            echo "Result: **$BUILD_STATUS**"
+            echo
+            echo "Image: $IMAGE:$VERSION"
+            echo
+            echo "Upstream digest: $BASE_DIGEST"
+            echo
+            echo "Platforms: linux/amd64, linux/arm64"
+          } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Build and push bridge image
-        uses: docker/build-push-action@v7
-        with:
-          file: Dockerfile
-          context: .
-          platforms: linux/amd64,linux/arm64
-          build-args: NEXTCLOUD_VERSION=${{ matrix.version }}
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-
-  publish:
-    name: Build Nextcloud & Push
-    needs: upgrade-bridges
+  latest:
+    name: Publish latest from the newest verified release
+    needs: [discover, build]
+    if: >-
+      always() && !cancelled() && needs.discover.result == 'success' &&
+      needs.discover.outputs.latest != ''
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v7
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Log in to GHCR
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - name: Log in to Docker Hub (optional)
+        if: env.DOCKERHUB_USERNAME != ''
         uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify newest published version and promote its immutable digest
+        env:
+          IMAGE: ${{ needs.discover.outputs.image }}
+          VERSION: ${{ needs.discover.outputs.latest }}
+          CANDIDATE: ${{ needs.discover.outputs.latest }}
+          PUBLISH_TAG: latest
+          BASE_DIGEST: ${{ needs.discover.outputs.latest_digest }}
+          RECIPE: ${{ needs.discover.outputs.recipe }}
+        run: python3 scripts/publish-nextcloud.py
 
-      - name: Extract metadata (tags, labels) for Docker
-        id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=raw,value=latest
-            type=raw,value=${{ env.NEXTCLOUD_VERSION }}
-            type=raw,value=build-${{ github.run_number }}
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v7
-        with:
-          file: Dockerfile
-          context: .
-          platforms: linux/amd64,linux/arm64
-          build-args: |
-            NEXTCLOUD_VERSION=${{ env.NEXTCLOUD_VERSION }}
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+  discovery-status:
+    name: Report incomplete version discovery
+    needs: [discover, build, latest]
+    if: always() && needs.discover.result == 'success'
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Report per-version lookup failures
+        env:
+          LOOKUP_FAILURES: ${{ needs.discover.outputs.lookup_failures }}
+        run: |
+          if [ "$LOOKUP_FAILURES" -ne 0 ]; then
+            echo "::error::$LOOKUP_FAILURES version lookups failed. Valid images were processed; see the discovery summary."
+            exit 1
+          fi

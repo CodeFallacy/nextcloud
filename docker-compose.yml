@@ -8,7 +8,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ghcr.io/codefallacy/nextcloud:34.0.4
+    image: ghcr.io/codefallacy/nextcloud:latest
     restart: always
     depends_on:
       - nextcloud-db
@@ -55,7 +55,7 @@ services:
 
 #if this cron container doesnt work add this command to host machine crontab: */5 * * * * docker exec -u www-data nextcloud-container-name php cron.php 
   cron:
-    image: ghcr.io/codefallacy/nextcloud:34.0.4
+    image: ghcr.io/codefallacy/nextcloud:latest
     restart: always
     volumes:
       - ${NEXTCLOUD_VOLUME}:/var/www/html
@@ -67,7 +67,7 @@ services:
       - npm-network
 
   collabora-nc:
-    image: collabora/code:26.04.3.2.1
+    image: collabora/code:latest
     restart: unless-stopped
     shm_size: 256m
     environment:

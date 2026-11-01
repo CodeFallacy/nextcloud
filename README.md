@@ -1,20 +1,115 @@
 # Nextcloud image and deployment notes
 
-This repository builds an Apache-based Nextcloud **34.0.4** image for both
-`linux/amd64` (x86-64) and `linux/arm64` (for example, Raspberry Pi 5). The
-GitHub Actions publishes multi-platform images at
-`ghcr.io/codefallacy/nextcloud:32.0.15`, `:33.0.9`, and `:34.0.4`, plus
-`latest` and a build-number tag for 34.0.4. Docker selects the correct
-architecture from each manifest. The workflow runs on pushes to `production`
-or can be started manually. The old unversioned `arm64`/`aarch64` aliases are
-not updated: pointing a live 32.x installation at 34.x would skip a required
-major-version upgrade. Use versioned tags on both CPUs.
+This repository builds customized Apache-based Nextcloud images for both
+`linux/amd64` (x86-64) and `linux/arm64` (for example, Raspberry Pi 5).
+Images are published to `ghcr.io/codefallacy/nextcloud` and linked to this
+repository in GitHub Packages. Docker selects the correct architecture.
 
-As of September 16, 2026, 34.0.4 is the newest stable Apache image published
-on Docker Hub. Nextcloud 35 (Hub 26 Summer) was announced the same day, but
-its stable Docker image is not yet published. Keep the app and cron containers
-on the same version; never use `nextcloud:latest` for cron alongside a pinned
-app, since it can advance independently to another major version.
+## Automatic image builds
+
+The **Build Nextcloud** GitHub Actions workflow checks Docker Hub every day
+at **03:23 UTC**. It discovers exact stable `X.Y.Z-apache` tags, including
+future major versions, without maintaining a version list. Prereleases,
+FPM/Alpine variants, and floating upstream aliases are excluded.
+
+For each version, it builds when the GHCR image is missing, the upstream
+manifest digest changed, the Dockerfile/build automation changed, or the
+published image is missing AMD64 or ARM64. Checking digests also catches
+upstream PHP/OS rebuilds published under an existing Nextcloud version tag.
+Each build uses the discovered immutable upstream digest and runs without
+layer caching so the added Debian packages are fetched again. This detects
+upstream changes; it does not certify that an image has no vulnerabilities.
+
+The default discovery floor is **32.0.15**, preserving the existing 32.x
+upgrade path while avoiding a backfill of every historical Nextcloud release.
+An optional repository Actions variable, `NEXTCLOUD_MIN_VERSION`, can change
+this floor. It is a lower bound, not a version that needs updating for each
+release. All matching published versions from that floor onward are checked.
+The first runs may backfill older releases: at most 24 images are queued per
+run, newest first, with two builds in parallel. Remaining images are discovered
+again on the next run. Force rebuilds also respect this batch limit.
+
+An upstream image must have both target architectures before it is built.
+Unavailable or partially published upstream tags are deferred. Docker Hub API
+requests and registry lookups retry up to four times with
+exponential backoff (2, 4, and 8 seconds); Docker Hub HTTP 429 responses also
+honor numeric Retry-After values, capped at 60 seconds. Requests have timeouts.
+Truncated JSON and incomplete HTTP responses use the same retry policy.
+Permission errors fail the complete discovery run immediately. Other
+per-version lookup failures are recorded while valid versions continue to
+build; a final status job reports the incomplete discovery as a failure.
+Build/push operations have three
+attempts with 15- and 30-second pauses. Failed image builds are retried by
+the next check; one version failing does not cancel other version builds.
+
+Published tags:
+
+- `:<version>` — the customized image for that exact Nextcloud version;
+  refreshed when upstream or the build recipe changes.
+- `:build-<version>-<run-id>-<attempt>` — a candidate tag unique to the
+  workflow run and rerun attempt. Builds push this tag first; shared tags
+  are updated only after verifying its immutable digest and metadata.
+- `:latest` — only the newest discovered stable version. Its expected build
+  must pass the base-digest, recipe, version, timestamp, and architecture
+  checks before promotion. Failed historical builds do not block this step.
+  The exact version tag is published from the same verified digest before
+  `latest`; failure to publish that version tag leaves `latest` unchanged.
+  If the newest image is incomplete or fails verification, the existing
+  alias is kept; an older version is never substituted. Promotion also
+  refuses to replace a newer version or a newer build of the same version.
+
+Before every shared-tag write and retry, promotion checks the current official
+`<version>-apache` digest and both architectures. A saved build matrix using a
+superseded upstream image is rejected, even if rerunning the build gives it a
+new timestamp. Exact-version tags also reject older builds of the same current
+base image.
+
+The `latest` job resolves the successfully published exact-version tag to an
+immutable digest and validates it against discovery's expected base and recipe.
+It does not reuse a candidate name saved by an earlier workflow attempt, so
+**Re-run failed jobs** can promote a successful retry. If the upstream image
+has changed since discovery, start a new **Run workflow** check instead of
+replaying saved jobs.
+
+Image index annotations record the upstream digest and build recipe hash.
+GHCR is the durable build state; no version-update commits or Actions cache
+are required. Timestamped discovery logs record requests, decisions, and
+retries. Build logs are grouped by attempt, and Actions summaries record discovery decisions
+and each image build result. Exhausted retries fail the workflow clearly.
+
+### Run the check manually
+
+Open **Actions → Build Nextcloud → Run workflow** on GitHub. Leave
+**force_rebuild** unchecked to detect and build only new or changed images.
+Check it to rebuild the newest batch even when the recorded inputs match,
+for example to refresh the added Debian packages. Force mode skips reading
+existing GHCR images, so it can also bootstrap an unpublished package.
+
+The workflow also runs when its build files change on `main`. Only the
+repository default branch may run discovery and publishing; dispatches from
+other branches are skipped. Every shared-tag write checks the current remote
+default-branch SHA, so stale runs fail rather than overwrite newer recipes.
+Publishing uses the built-in `GITHUB_TOKEN`; no personal access token is
+needed. If the GHCR package already exists, grant this repository Actions
+access to it. Set package visibility to public if anonymous pulls are wanted.
+Optional repository secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` enable
+Docker Hub login for discovery, builds, and promotion, reducing anonymous pull-limit
+failures on shared runners. Configure both together; a read-only Docker Hub
+access token is sufficient. Retries cannot bypass an exhausted pull quota.
+
+The workflow must be merged into the repository's **default branch** for
+its schedule and manual button to be available. GitHub schedules can be
+delayed, and public-repository schedules are disabled after 60 days without
+repository activity. Check that the schedule remains enabled; a separate
+heartbeat monitor is useful for detecting missed runs. See the
+[GitHub scheduling rules](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule)
+and [GHCR access documentation](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry).
+
+Build automation publishes images; deployment is a separate step. The
+main Compose file uses `latest` for app and cron; upgrade overlays remain
+pinned. Keep app and cron on the same version
+and perform required major-version upgrades in sequence. The old unversioned
+`arm64`/`aarch64` aliases are not updated.
 
 ## What is in the image
 
@@ -175,16 +270,15 @@ TCP port to the internet. Official ClamAV Debian image tags include both
 ## Collabora / Nextcloud Office
 
 Collabora is **not** part of the Nextcloud image. The Compose file runs the
-official `collabora/code:26.04.3.2.1` container separately on `npm-network`,
-shared with the reverse proxy and Nextcloud. That tag supports `amd64` and
-`arm64`; do not force
+official `collabora/code:latest` container separately on `npm-network`,
+shared with the reverse proxy and Nextcloud. Do not force
 `platform: linux/arm64` in a Compose file intended for both architectures.
 The Pi deployment uses `shm_size: 256m`, a reduced spare-process count, and
 the settings below (replace the domains for another installation):
 
 ```yaml
 collabora-nc:
-  image: collabora/code:26.04.3.2.1
+  image: collabora/code:latest
   restart: unless-stopped
   shm_size: 256m
   environment:
