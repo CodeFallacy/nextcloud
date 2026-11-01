@@ -1,5 +1,6 @@
 ARG NEXTCLOUD_VERSION=34.0.4
-FROM nextcloud:${NEXTCLOUD_VERSION}-apache
+ARG NEXTCLOUD_BASE=nextcloud:${NEXTCLOUD_VERSION}-apache
+FROM ${NEXTCLOUD_BASE}
 ARG TARGETARCH
 
 # Debian resolves native amd64/arm64 packages for the selected base image.
@@ -17,6 +18,7 @@ RUN set -eux; \
         pdftk-java \
         poppler-utils; \
     rm -rf /var/lib/apt/lists/*; \
+    php --version; \
     java -version; \
     ffmpeg -version; \
     pdftk --version; \
